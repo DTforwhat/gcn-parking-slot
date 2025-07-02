@@ -20,6 +20,45 @@ def MLP(channels: list, do_bn=True, drop_out=False):
 
     return nn.Sequential(*layers)
 
+
+class GraphTransformer(nn.Module):
+    def __init__(self, feature_dim: int, num_layers: int, num_heads: int):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            GraphTransformerLayer(feature_dim, num_heads)
+            for _ in range(num_layers)])
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+        
+class GraphTransformerLayer(nn.Module):
+    def __init__(self, feature_dim: int, num_heads: int, dropout_rate=0.1):
+        super().__init__()
+        self.attn = MultiHeadedAttention(num_heads, feature_dim)
+        self.ffn = MLP([feature_dim, feature_dim * 2, feature_dim]) # 前馈网络
+
+        self.norm1 = nn.LayerNorm(feature_dim)
+        self.norm2 = nn.LayerNorm(feature_dim)
+        self.dropout1 = nn.Dropout(dropout_rate)
+        self.dropout2 = nn.Dropout(dropout_rate)
+
+    def forward(self, x):
+        # x的维度: (batch_size, feature_dim, num_points)
+
+        # 1. 自注意力 + Add & Norm
+        x_norm = self.norm1(x.permute(0, 2, 1)).permute(0, 2, 1)
+        attn_output, _ = self.attn(x_norm, x_norm, x_norm)
+        x = x + self.dropout1(attn_output)
+
+        # 2. 前馈网络 + Add & Norm
+        x_norm = self.norm2(x.permute(0, 2, 1)).permute(0, 2, 1)
+        ffn_output = self.ffn(x_norm)
+        x = x + self.dropout2(ffn_output)
+
+        return x
+        
 class EdgePredictor(nn.Module):
     "Edge connectivity predictor using MLPs"
     def __init__(self, cfg):
@@ -122,9 +161,13 @@ class GCNEncoder(nn.Module):
         self.point_encoder = PointEncoder(2, self.feat_dim, cfg.point_encoder.layers) 
         
         if cfg.type == 'GAT':
+             if cfg.type == 'GAT':
             self.gnn = AttentionalGNN(self.feat_dim, cfg.gnn.gat_layers)
         elif cfg.type == 'DGCNN':
             self.gnn = DGCNN(self.feat_dim, self.feat_dim, k=cfg.gnn.k)
+        # --- 新增的选项，用于加载新模块 ---
+        elif cfg.type == 'GraphTransformer':
+            self.gnn = GraphTransformer(self.feat_dim, cfg.gnn.gt_layers, cfg.gnn.gt_heads)
         else:
             raise ValueError("Unknown GCNEncoder type {}".format(cfg.type))
 
